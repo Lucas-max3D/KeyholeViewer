@@ -68,14 +68,50 @@ def state_events(t: np.ndarray, st: np.ndarray, t_off: float | None = None):
 
 
 # ----------------------------------------------------------------------------------- acoustic
-def detect_acoustic(chans: dict, laser=None, thr_V=0.17, smooth_ms=0.2, min_dwell_ms=0.3):
+DECAY_TAU_MS = 1.5   # acoustic ringing after a keyhole collapse (measured after laser off)
+OPEN_FRACTION = 0.9  # collapse not before the last time the RMS was >= this fraction of its open level
+
+
+def _decay_onset(t, y, t_open, t_thr, t_max, tau=DECAY_TAU_MS, alpha=OPEN_FRACTION):
+    """Collapse time from the acoustic envelope: the RMS rings down with ~tau after the keyhole collapses, so
+    the threshold crossing t_thr comes too late. Fit  y = L + s (t - t_c)  before t_c  and
+    y = b + (L - b) exp(-(t - t_c)/tau)  after it (least squares over t_c), then keep t_c no earlier than the
+    last time the RMS was still >= alpha x its open level (75th percentile of the open period)."""
+    lo = max(t_open + 0.3, t_thr - 5.0)
+    m = (t >= lo) & (t <= t_max)
+    tt, yy = t[m], y[m]
+    best = (np.inf, t_thr)
+    if tt.size > 20:
+        for tc in np.arange(max(lo + 0.3, t_thr - 4.0), t_thr + 1e-9, 0.02):
+            pre = tt < tc
+            e = np.exp(-(tt - tc) / tau)
+            A = np.stack([np.where(pre, 1.0, e), np.where(pre, tt - tc, 0.0), np.where(pre, 0.0, 1.0 - e)], 1)
+            coef, *_ = np.linalg.lstsq(A, yy, rcond=None)
+            if coef[0] <= coef[2]:
+                continue
+            sse = float(np.sum((A @ coef - yy) ** 2))
+            if sse < best[0]:
+                best = (sse, float(tc))
+    tc = best[1]
+    mo = (t >= t_open) & (t <= t_thr)
+    if mo.sum() > 3:
+        L = np.percentile(y[mo], 75)
+        hi = np.flatnonzero(mo & (y >= alpha * L))
+        if hi.size:
+            tc = max(tc, float(t[hi[-1]]))
+    return min(tc, t_thr)
+
+
+def detect_acoustic(chans: dict, laser=None, thr_V=0.17, smooth_ms=0.2, min_dwell_ms=0.3, refine=True):
+    """Keyhole open while the smoothed A1 RMS is above thr_V (Schmitt trigger). Openings are taken at the
+    threshold crossing; collapses are moved back to the onset of the acoustic ring-down (see _decay_onset)."""
     rms = chans["RMS"]
     fs, trig = rms["fs"], rms["trig"]
     y = rms["y"].astype(np.float64)
     w = max(1, int(smooth_ms * 1e-3 * fs))
     ys = ndi.uniform_filter1d(y, w)
     if laser:
-        t0, t1 = laser[0] - 2.0, laser[1] + 5.0
+        t0, t1 = laser[0] - 2.0, laser[1] + 8.0
     else:
         t0, t1 = -5.0, (y.size - trig) / fs * 1e3
     i0 = max(0, int(t0 * 1e-3 * fs) + trig)
@@ -84,10 +120,30 @@ def detect_acoustic(chans: dict, laser=None, thr_V=0.17, smooth_ms=0.2, min_dwel
     seg = ys[i0:i1:dec]
     t = (np.arange(i0, i1, dec) - trig) / fs * 1e3
     st = hysteresis_state(seg, thr_V * 1.15, thr_V / 1.15, int(min_dwell_ms * 1e-3 * fs / dec))
-    if laser:  # keyhole can only exist while the laser is on
-        st &= (t >= laser[0]) & (t <= laser[1] + 0.05)
-    ev = state_events(t, st, laser[1] if laser else None)
-    open_ms = float(st.sum() * dec / fs * 1e3)
+    if laser:  # no keyhole before the laser; after laser off only the ring-down of an open keyhole
+        st &= t >= laser[0]
+        k = int(np.searchsorted(t, laser[1] + 0.05))
+        for i in range(max(k, 1), st.size):
+            st[i] = st[i] and st[i - 1]
+    ev, t_open = [], t[0]
+    for i in np.flatnonzero(np.diff(st.astype(np.int8))):
+        tt = float(t[i + 1])
+        if st[i + 1]:
+            ev.append({"type": "opening", "t_ms": round(tt, 5), "note": ""})
+            t_open = tt
+            continue
+        e = {"type": "collapse", "t_ms": round(tt, 5), "note": "", "t_threshold_ms": round(tt, 5)}
+        if refine:
+            nxt = t[i + 1:][st[i + 1:]]
+            t_max = min(float(nxt[0]) - 0.1 if nxt.size else tt + 4.0, tt + 4.0)
+            e["t_ms"] = round(_decay_onset(t, seg, t_open, tt, t_max), 5)
+        if laser and e["t_ms"] > laser[1] - 0.1:
+            e["t_ms"], e["note"] = round(float(laser[1]), 5), "at laser off"
+        ev.append(e)
+    if st.size and st[-1]:  # still open at the end of the window
+        ev.append({"type": "collapse", "t_ms": round(float(laser[1] if laser else t[-1]), 5), "note": "at laser off"})
+    m_on = t <= (laser[1] if laser else t[-1])
+    open_ms = float(st[m_on].sum() * dec / fs * 1e3)
     return {"events": ev, "thr_V": thr_V, "open_ms": round(open_ms, 3),
             "series": {"t": t[::4].round(4).tolist(), "y": seg[::4].round(4).tolist()}}
 

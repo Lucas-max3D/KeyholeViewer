@@ -47,7 +47,11 @@ and is cached in `annotations/cache/`. Results appear as dotted suggestion lines
 copies them into the marked events with the note "auto".
 
 - **Acoustic**: keyhole open while the A1 RMS (0.2 ms smoothed) is above *RMS thr* (Schmitt trigger ×/÷ 1.15).
-  A collapse after the laser switched off is reported at the laser-off time.
+  Openings are taken at the threshold crossing. After a collapse the acoustic signal rings down exponentially
+  (`DECAY_TAU_MS` in `detect.py`), so the threshold is crossed too late; the collapse time is therefore the
+  onset of that decay (least-squares fit of a level followed by an exponential decay), but not earlier than the
+  last time the RMS was still at `OPEN_FRACTION` of its open level. The plain threshold crossing is kept in the
+  event as `t_threshold_ms`. A collapse at or after laser off is reported at the laser-off time.
 - **Video**: every frame is divided by a pre-laser and a post-laser reference (median of frames);
   pixels brighter than both by *pixel thr* are vapour. The keyhole is the bright component that starts at the
   sample surface and reaches deepest. The surface is found per column in the pre-laser reference (yellow dashed
