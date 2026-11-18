@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.tmp
+# generated detection results (recreate with "Rescan + auto-detect all samples")
+annotations/cache/
+# local annotations (marked events, notes)
+annotations/

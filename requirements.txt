@@ -1,0 +1,6 @@
+flask
+numpy
+scipy
+h5py
+tifffile
+openpyxl

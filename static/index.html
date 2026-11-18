@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keyhole Viewer · ID19</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<aside id="sidebar">
+  <div class="side-head">
+    <h1>Keyhole Viewer</h1>
+    <div class="sub">ESRF ID19 · Feb 2026</div>
+  </div>
+  <div class="side-tools">
+    <input id="search" type="search" placeholder="Filter e.g. W2S1">
+    <label class="chk"><input type="checkbox" id="onlyBoth"> video + acoustic only</label>
+    <div class="row">
+      <button id="rescan" title="Re-scan folders (data still being copied)">↻ Rescan</button>
+      <a class="btn" href="/api/export.csv" title="All marked events of all samples">⇩ Export CSV</a>
+    </div>
+  </div>
+  <div id="navHyst" class="item nav" title="Power hysteresis of keyhole formation / collapse over all samples">
+    <span class="nm">◩ Hysteresis</span><span class="badge on">all</span></div>
+  <div id="sampleList"></div>
+</aside>
+
+<main id="main">
+<div id="sampleView">
+  <header id="sampleHead">
+    <div>
+      <h2 id="title">Select a sample</h2>
+      <div id="meta" class="meta"></div>
+    </div>
+    <div id="readout" class="readout"></div>
+  </header>
+
+  <section id="videoSection" class="panel">
+    <div class="toolbar">
+      <label class="switch" title="Toggle between the processed view and the untreated raw frames with optimised brightness/contrast (R)">
+        <span class="sw-lbl on-proc">Processed</span>
+        <input type="checkbox" id="rawSwitch"><span class="track"><span class="knob"></span></span>
+        <span class="sw-lbl on-raw">Raw <kbd>R</kbd></span>
+      </label>
+      <select id="rawRange" class="hidden" title="Brightness/contrast of the raw frames (linear, per frame)">
+        <option value="sample">contrast: sample</option><option value="full">contrast: full range</option></select>
+      <select id="mode" title="Display mode">
+        <option value="ratio" selected>÷ reference frame</option>
+        <option value="raw">no correction</option>
+        <option value="diff">Δ previous frame</option>
+      </select>
+      <label>ref <input id="refFrame" type="number" value="-100" step="1" class="num"></label>
+      <label>min <input id="lo" type="number" step="any" class="num"></label>
+      <label>max <input id="hi" type="number" step="any" class="num"></label>
+      <button id="auto" title="Auto contrast (0.5–99.5 %)">Auto</button>
+      <label class="chk"><input type="checkbox" id="autoEach"> auto every frame</label>
+      <label class="chk"><input type="checkbox" id="invert"> invert</label>
+      <label class="chk"><input type="checkbox" id="flipV" checked> flip ↕</label>
+      <label class="chk"><input type="checkbox" id="flipH"> flip ↔</label>
+      <label class="chk"><input type="checkbox" id="overlay" checked> keyhole overlay</label>
+      <span class="spacer"></span>
+      <span class="hint">Shift+drag on image = ROI</span>
+      <button id="traceBtn" title="Compute per-frame change inside the ROI vs. the reference frame">Video trace</button>
+      <span id="traceStatus" class="hint"></span>
+    </div>
+    <div id="videoWrap">
+      <canvas id="video" width="1024" height="512"></canvas>
+      <div id="roiBox"></div>
+      <div id="noVideo" class="placeholder hidden">No video for this sample (yet)</div>
+    </div>
+    <div class="transport">
+      <button id="bStart" title="First frame">⏮</button>
+      <button id="bBack10" title="−10 frames (Shift+←)">−10</button>
+      <button id="bBack" title="−1 frame (←)">◀</button>
+      <button id="bPlay" title="Play / pause (Space)">▶</button>
+      <button id="bFwd" title="+1 frame (→)">▶︎|</button>
+      <button id="bFwd10" title="+10 frames (Shift+→)">+10</button>
+      <label>speed <select id="speed">
+        <option value="1">1 fr/tick</option><option value="2">2</option><option value="5" selected>5</option>
+        <option value="10">10</option><option value="25">25</option></select></label>
+      <div id="sliderWrap" title="Orange: commanded laser power along the timeline">
+        <canvas id="sliderPower"></canvas>
+        <div id="sliderTip"></div>
+        <input id="slider" type="range" min="0" max="100" step="1" value="0">
+      </div>
+      <label>frame <input id="frameNo" type="number" class="num" step="1"></label>
+    </div>
+  </section>
+
+  <section id="plotSection" class="panel">
+    <div class="toolbar">
+      <strong>Acoustic emission</strong>
+      <label class="chk"><input type="checkbox" id="showRms" checked> RMS envelope</label>
+      <label>right axis <select id="rightAxis">
+        <option value="depth">keyhole depth</option><option value="angle">front-wall angle</option>
+        <option value="trace">video trace</option><option value="none">none</option></select></label>
+      <label class="chk"><input type="checkbox" id="follow"> follow cursor</label>
+      <button id="fitLaser" title="Zoom to laser-on window">Laser window</button>
+      <button id="fitVideo" title="Zoom to video range">Video range</button>
+      <button id="fitAll" title="Whole acoustic recording">All</button>
+      <span class="spacer"></span>
+      <span class="hint">click = seek · drag = zoom · wheel = zoom · right-drag = pan · dbl-click = reset</span>
+    </div>
+    <div id="plotWrap"><canvas id="plot"></canvas></div>
+    <div id="noAcoustic" class="placeholder hidden">No acoustic file for this sample (yet)</div>
+  </section>
+
+  <section id="detSection" class="panel">
+    <div class="toolbar">
+      <strong>Auto-detect</strong>
+      <button id="detBtn" class="primary">Run auto-detect</button>
+      <label title="Acoustic: keyhole open when the A1 RMS (0.2 ms smoothed) exceeds this">RMS thr <input id="thrV" type="number" step="0.01" value="0.17" class="num"> V</label>
+      <label title="Video: keyhole open when the depth exceeds this">depth thr <input id="thrPx" type="number" step="1" value="12" class="num"> px</label>
+      <label title="Shorter open/closed periods are ignored">min dwell <input id="dwell" type="number" step="0.05" value="0.3" class="num"> ms</label>
+      <label title="Brightness threshold of frame/reference − 1 for keyhole pixels">pixel thr <input id="vthr" type="number" step="0.01" value="0.07" class="num"></label>
+      <label title="Pixel size for depth in µm (leave empty for px)">pixel size <input id="umpx" type="number" step="0.01" class="num" value="4.3" placeholder="µm/px"> µm/px</label>
+      <span id="detStatus" class="hint"></span>
+      <span class="spacer"></span>
+      <a id="detCsv" class="btn hidden" href="#">⇩ per-frame depth/angle CSV</a>
+    </div>
+    <div class="det-grid">
+      <div>
+        <table id="sugg"><thead><tr><th>Suggested</th><th>Source</th><th>t [ms]</th><th>frame</th><th>P [W]</th><th>note</th><th><button id="acceptAll">Accept all</button></th></tr></thead><tbody></tbody></table>
+      </div>
+      <div>
+        <table id="stats"><thead><tr><th>Video open period</th><th>mean depth</th><th>max depth</th><th>front angle</th></tr></thead><tbody></tbody></table>
+        <div class="hint" id="detInfo"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="annSection" class="panel">
+    <div class="ann-grid">
+      <div>
+        <div class="toolbar"><strong>Mark at cursor</strong>
+          <label>sync offset video→acoustic <input id="syncOffset" type="number" step="0.001" class="num" value="0"> ms</label>
+        </div>
+        <div class="markbtns">
+          <div class="mgroup"><span>Video</span>
+            <button class="mark open" data-type="opening" data-source="video">Keyhole opens <kbd>Q</kbd></button>
+            <button class="mark collapse" data-type="collapse" data-source="video">Keyhole collapses <kbd>W</kbd></button>
+          </div>
+          <div class="mgroup"><span>Acoustic</span>
+            <button class="mark open" data-type="opening" data-source="acoustic">Keyhole opens <kbd>A</kbd></button>
+            <button class="mark collapse" data-type="collapse" data-source="acoustic">Keyhole collapses <kbd>S</kbd></button>
+          </div>
+        </div>
+        <textarea id="notes" placeholder="Notes for this sample…"></textarea>
+        <div id="saveState" class="hint"></div>
+      </div>
+      <div>
+        <table id="events">
+          <thead><tr><th>#</th><th>Event</th><th>Source</th><th>t [ms]</th><th>frame</th><th>P [W]</th><th>note</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <div id="compare"></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div id="hystView" class="hidden">
+  <header class="hyst-head">
+    <div>
+      <h2>Power hysteresis of keyhole formation and collapse</h2>
+      <div class="meta" id="hystMeta"></div>
+    </div>
+  </header>
+  <section class="panel">
+    <div class="toolbar">
+      <button id="batchBtn" class="primary" title="Rescan the folders and run auto-detect (acoustic + video) on every sample">Rescan + auto-detect all samples</button>
+      <label class="chk"><input type="checkbox" id="batchForce"> recompute cached videos</label>
+      <span id="batchStatus" class="hint"></span>
+      <span class="spacer"></span>
+      <label title="Which events to use">events <select id="hystBasis">
+        <option value="auto">auto-detected</option><option value="manual">marked (where present), else auto</option></select></label>
+      <label title="Walls can differ (focus, height, preheating)">group <select id="hystGroup">
+        <option value="mv">material + speed</option><option value="wall" selected>material + speed + wall</option></select></label>
+      <label title="Open/closed periods shorter than this are treated as flicker">flicker filter <input id="hystMerge" type="number" step="0.1" value="1.0" class="num"> ms</label>
+    </div>
+    <div class="hint" id="hystExplain">
+      Every keyhole opening/collapse is mapped onto the commanded power at that moment (sheet power profile along the 4 mm line,
+      position = v·(t − laser on)). <b class="c-on">▲ P<sub>on</sub></b>: opening on a rising ramp ·
+      <b class="c-off">▼ P<sub>off</sub></b>: collapse on a falling ramp ·
+      <span class="c-off">◁</span> still open at laser off / leaving the image (P<sub>off</sub> is below this) ·
+      <span class="c-on">△</span> open from the start (P<sub>on</sub> ≤ start power) ·
+      <span class="c-on">▷</span> no keyhole (P<sub>on</sub> above this) ·
+      <span class="c-const">●/○</span> constant-power line with / without keyhole.
+      Hysteresis = P<sub>on</sub> clearly above P<sub>off</sub>.
+      <br><b>Caveats:</b> (1) near threshold the keyhole forms only after an incubation time (ms), so P<sub>on</sub> on a rising ramp
+      overestimates the static threshold by about ramp rate × delay; (2) the thin wall heats up along the line and ramp-down lines
+      deposit more energy early, so part of a measured ΔP can be thermal history rather than intrinsic keyhole bistability;
+      (3) samples without a laser-gate recording assume the laser window from the sheet.
+    </div>
+  </section>
+  <section class="panel"><div id="hystCards" class="cards"></div></section>
+  <section class="panel"><div class="toolbar"><strong>Transition powers by group</strong>
+    <label class="chk"><input type="checkbox" id="hystShowA" checked> acoustic</label>
+    <label class="chk"><input type="checkbox" id="hystShowV" checked> video</label></div>
+    <div id="hystChart"></div></section>
+  <section class="panel"><div class="toolbar"><strong>Lines</strong><span class="hint">click a row to open the sample</span></div>
+    <table id="hystTable"><thead><tr><th>Sample</th><th>Power profile</th><th>v [mm/s]</th><th>Source</th><th>Transitions (class · P at event · x)</th><th>ΔP in line</th></tr></thead><tbody></tbody></table>
+  </section>
+</div>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>
