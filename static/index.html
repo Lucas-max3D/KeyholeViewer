@@ -50,6 +50,7 @@
         <option value="diff">Δ previous frame</option>
       </select>
       <label>ref <input id="refFrame" type="number" value="-100" step="1" class="num"></label>
+      <label title="Number of frames averaged for the reference (starting at the ref frame) – a noisy single reference adds its noise to every frame">×<input id="refAvg" type="number" value="20" min="1" max="200" step="1" class="num"></label>
       <label>min <input id="lo" type="number" step="any" class="num"></label>
       <label>max <input id="hi" type="number" step="any" class="num"></label>
       <button id="auto" title="Auto contrast (0.5–99.5 %)">Auto</button>
@@ -58,6 +59,11 @@
       <label class="chk"><input type="checkbox" id="flipV" checked> flip ↕</label>
       <label class="chk"><input type="checkbox" id="flipH"> flip ↔</label>
       <label class="chk"><input type="checkbox" id="overlay" checked> keyhole overlay</label>
+      <span class="denoise" id="denoiseGrp" title="Noise reduction (applies to Processed and Raw)">
+        <label class="chk" title="Subtract the mean dark-field frame (camera offset) before any correction"><input type="checkbox" id="darkSub" checked> dark</label>
+        <label title="Average this many consecutive frames centred on the current one – lowers the photon noise by √n, but blurs the motion over n × 25 µs">avg <select id="tAvg"><option>1</option><option>2</option><option>3</option><option>5</option><option>9</option></select></label>
+        <label title="Gaussian smoothing of the image (σ in pixels)">smooth <select id="sSmooth"><option value="0">off</option><option value="0.7">0.7 px</option><option value="1">1 px</option><option value="1.5">1.5 px</option><option value="2">2 px</option><option value="3">3 px</option></select></label>
+      </span>
       <span class="spacer"></span>
       <span class="hint">Shift+drag on image = ROI</span>
       <button id="traceBtn" title="Compute per-frame change inside the ROI vs. the reference frame">Video trace</button>

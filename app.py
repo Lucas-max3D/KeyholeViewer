@@ -12,6 +12,7 @@ import threading
 import time
 
 import numpy as np
+from scipy import ndimage as ndi
 from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
 import batch
@@ -158,6 +159,7 @@ def api_sample(key):
             "date": v.meta["date"], "time": v.meta["time"], "shutterNs": v.meta["shutterNs"],
             "parts": [{"file": os.path.basename(p.tif), "start": p.start, "count": p.count,
                        "available": p.available} for p in v.parts],
+            "dark": os.path.basename(s["dark_folder"]) if s.get("dark_folder") else None,
         }
     h = acoustic_hdr(key)
     if h:
@@ -206,22 +208,55 @@ def api_acoustic_value(key):
     return jsonify(out)
 
 
+def dark(key):
+    """Mean dark frame for a sample's video (None if no dark-field recording was found)."""
+    s = sample(key)
+    return data.dark_frame(s["dark_folder"], CACHE_DIR) if s.get("dark_folder") else None
+
+
 @app.route("/api/frame/<key>/<int(signed=True):n>")
 def api_frame(key, n):
+    """Raw frame n as little-endian uint16. Optional processing (then float32 is returned):
+    dark=1 subtract the mean dark frame; avg=k mean of k frames centred on n (or, with from=1, the k frames
+    starting at n: used for the reference); sigma=s Gaussian smoothing [px]."""
     v = video(key)
     if not v:
         abort(404)
+    a = request.args
+    k = max(1, min(201, int(a.get("avg", 1))))
+    sigma = max(0.0, min(5.0, float(a.get("sigma", 0))))
+    use_dark = a.get("dark") == "1"
+    if a.get("from") == "1":
+        n0 = max(v.first, min(n, v.last - k + 1))
+    else:
+        n0 = max(v.first, min(n - (k - 1) // 2, v.last - k + 1))
+    ns = [m for m in range(n0, n0 + k) if v.first <= m <= v.last]
     try:
-        arr = v.read_frame(n)
+        if k == 1 and sigma == 0 and not use_dark:
+            arr = v.read_frame(n)
+        else:
+            arr = np.zeros((v.meta["height"], v.meta["width"]), np.float32)
+            for m in ns:
+                arr += v.read_frame(m)
+            arr /= len(ns)
+            if use_dark:
+                d = dark(key)
+                if d is not None:
+                    arr -= d
+            if sigma > 0:
+                arr = ndi.gaussian_filter(arr, sigma)
+            arr = arr.astype("<f4")
     except IndexError:
         abort(404)
-    step = int(request.args.get("bin", 1))
+    step = int(a.get("bin", 1))
     if step > 1:
         h, w = arr.shape
-        arr = arr[:h // step * step, :w // step * step].reshape(h // step, step, w // step, step).mean((1, 3)).astype("<u2")
+        arr = arr[:h // step * step, :w // step * step].reshape(h // step, step, w // step, step).mean((1, 3)).astype(arr.dtype)
     resp = Response(arr.tobytes(), mimetype="application/octet-stream")
     resp.headers["X-Width"] = str(arr.shape[1])
     resp.headers["X-Height"] = str(arr.shape[0])
+    resp.headers["X-Dtype"] = "f4" if arr.dtype.kind == "f" else "u2"
+    resp.headers["Access-Control-Expose-Headers"] = "X-Width, X-Height, X-Dtype"
     resp.headers["Cache-Control"] = "max-age=3600"
     return resp
 
@@ -243,12 +278,16 @@ def api_videotrace(key):
     ref_n = int(cfg.get("ref", v.first))
     x0, y0, x1, y1 = [int(x) for x in cfg.get("roi", [0, 0, v.meta["width"], v.meta["height"]])]
     step = max(1, int(cfg.get("step", 1)))
+    ref_k = max(1, min(200, int(cfg.get("refavg", 1))))
+    dk = dark(key) if cfg.get("dark") else None
+    dk = dk[y0:y1, x0:x1] if dk is not None else 0.0
     job = {"state": "running", "done": 0, "total": 0, "t": [], "y": [], "roi": [x0, y0, x1, y1], "ref": ref_n}
     _trace_jobs[key] = job
 
     def run():
         try:
-            ref = v.read_frame(ref_n)[y0:y1, x0:x1].astype(np.float32)
+            rns = [m for m in range(ref_n, ref_n + ref_k) if v.first <= m <= v.last] or [ref_n]
+            ref = np.mean([v.read_frame(m)[y0:y1, x0:x1].astype(np.float32) for m in rns], 0) - dk
             ref[ref < 1] = 1
             frames = list(range(v.first, v.last + 1, step))
             job["total"] = len(frames)
@@ -257,7 +296,7 @@ def api_videotrace(key):
                 if job.get("cancel"):
                     job["state"] = "cancelled"
                     return
-                fr = v.read_frame(n)[y0:y1, x0:x1].astype(np.float32)
+                fr = v.read_frame(n)[y0:y1, x0:x1].astype(np.float32) - dk
                 job["t"].append(n / fps * 1e3)
                 job["y"].append(float(np.mean(np.abs(fr / ref - 1.0))))
                 job["done"] = i + 1

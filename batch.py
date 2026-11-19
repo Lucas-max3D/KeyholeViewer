@@ -67,7 +67,9 @@ def analyse_sample(s: dict, cfg: dict | None = None, force=False) -> dict:
                 with open(path, encoding="utf-8") as f:
                     an = json.load(f)
             else:
-                an = detect.analyze_video(v, laser, thr=cfg["video_thr"], step=cfg["step"])
+                dark = data.dark_frame(s["dark_folder"], CACHE_DIR) if s.get("dark_folder") else None
+                an = detect.analyze_video(v, laser, thr=cfg["video_thr"], step=cfg["step"], dark=dark)
+                an["dark"] = os.path.basename(s["dark_folder"]) if dark is not None else None
                 an["laser_assumed"] = assumed
                 tmp = path + ".tmp"
                 with open(tmp, "w", encoding="utf-8") as f:

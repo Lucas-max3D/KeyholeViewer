@@ -281,15 +281,34 @@ function seekTime(t) {
 }
 
 // ------------------------------------------------------------------------------------- video
-async function getFrame(n) {
-  if (S.frameCache.has(n)) return S.frameCache.get(n);
+// processing applied on the server: dark subtraction, temporal average, Gaussian smoothing
+function frameOpts() {
+  return { dark: $("#darkSub").checked && S.info && S.info.video && S.info.video.dark ? 1 : 0,
+           avg: +$("#tAvg").value || 1, sigma: +$("#sSmooth").value || 0 };
+}
+
+async function getFrame(n, extra) {
+  if (!S.key) throw new Error("no sample selected");
+  const o = Object.assign(frameOpts(), extra || {});
+  const q = `dark=${o.dark}&avg=${o.avg}&sigma=${o.sigma}${o.from ? "&from=1" : ""}`;
+  const ck = `${n}?${q}`;
+  if (S.frameCache.has(ck)) return S.frameCache.get(ck);
   const key = S.key;
-  const p = api(`/api/frame/${key}/${n}`).then(async (r) => ({
-    w: +r.headers.get("X-Width"), h: +r.headers.get("X-Height"), d: new Uint16Array(await r.arrayBuffer()),
-  }));
-  S.frameCache.set(n, p);
+  const p = api(`/api/frame/${key}/${n}?${q}`).then(async (r) => {
+    const buf = await r.arrayBuffer();
+    return { w: +r.headers.get("X-Width"), h: +r.headers.get("X-Height"),
+             d: r.headers.get("X-Dtype") === "f4" ? new Float32Array(buf) : new Uint16Array(buf) };
+  });
+  S.frameCache.set(ck, p);
   if (S.frameCache.size > 120) S.frameCache.delete(S.frameCache.keys().next().value);
-  try { return await p; } catch (e) { S.frameCache.delete(n); throw e; }
+  try { return await p; } catch (e) { S.frameCache.delete(ck); throw e; }
+}
+
+function onDenoiseChange() {
+  LS.set("darkSub", $("#darkSub").checked); LS.set("tAvg", $("#tAvg").value); LS.set("sSmooth", $("#sSmooth").value);
+  LS.set("refAvg", $("#refAvg").value);
+  S.frameCache.clear(); S.refN = null; S.lo = null;
+  showFrame(S.frame);
 }
 
 async function displayValues(n) {
@@ -300,11 +319,17 @@ async function displayValues(n) {
     for (let i = 0; i < out.length; i++) out[i] = f.d[i];
   } else if (mode === "ratio") {
     const rn = Math.max(S.first, Math.min(S.last, +$("#refFrame").value || S.first));
-    if (S.refN !== rn) { S.refImg = (await getFrame(rn)).d; S.refN = rn; }
+    const ra = Math.max(1, Math.min(200, Math.round(+$("#refAvg").value || 1)));
+    const rk = `${rn}x${ra}?${JSON.stringify(frameOpts())}`;
+    if (S.refN !== rk) {
+      // reference: mean of `ra` frames from the ref frame on (no temporal window around it)
+      S.refImg = (await getFrame(rn, { avg: ra, from: 1 })).d; S.refN = rk;
+    }
     const r = S.refImg;
-    for (let i = 0; i < out.length; i++) out[i] = f.d[i] / (r[i] || 1);
+    for (let i = 0; i < out.length; i++) { const d = r[i]; out[i] = f.d[i] / (d > 1 ? d : 1); }
   } else {
-    const p = (await getFrame(Math.max(S.first, n - 1))).d;
+    // difference to the frame one averaging window earlier (non-overlapping windows)
+    const p = (await getFrame(Math.max(S.first, n - (+$("#tAvg").value || 1)))).d;
     for (let i = 0; i < out.length; i++) out[i] = f.d[i] - p[i];
   }
   return { w: f.w, h: f.h, v: out };
@@ -331,7 +356,7 @@ async function showFrame(n) {
     if (hi <= lo) hi = lo + 1;
     $("#lo").value = Math.round(lo); $("#hi").value = Math.round(hi);
   } else {
-    if ($("#autoEach").checked || S.lo === null) setContrast(...percentiles(img.v, [0.5, 99.5]));
+    if ($("#autoEach").checked || S.lo === null) setContrast(...autoRange(img.v));
     lo = S.lo; hi = S.hi;
   }
   const cv = $("#video");
@@ -417,6 +442,18 @@ function drawKeyholeOverlay(ctx, n) {
   ctx.fillStyle = "#fff"; ctx.fillText(txt, bx, by + 15);
 }
 
+// auto contrast for the ÷ reference view never narrower than ±6 % around the median, otherwise a denoised
+// image is stretched until its residual noise fills the grey range again
+const RATIO_MIN_HALF = 0.06;
+function autoRange(v) {
+  let [lo, hi] = percentiles(v, [0.5, 99.5]);
+  if (!isRaw() && $("#mode").value === "ratio") {
+    const [m] = percentiles(v, [50]);
+    lo = Math.min(lo, m - RATIO_MIN_HALF); hi = Math.max(hi, m + RATIO_MIN_HALF);
+  }
+  return [lo, hi];
+}
+
 function setContrast(lo, hi) {
   const dec = $("#mode").value === "ratio" ? 4 : 1;
   S.lo = +(+lo).toFixed(dec); S.hi = +(+hi).toFixed(dec);
@@ -427,7 +464,7 @@ function setContrast(lo, hi) {
 async function autoContrast() {
   if (isRaw()) return showFrame(S.frame);
   const img = await displayValues(S.frame);
-  setContrast(...percentiles(img.v, [0.5, 99.5]));
+  setContrast(...autoRange(img.v));
   showFrame(S.frame);
 }
 
@@ -817,7 +854,7 @@ async function startTrace() {
   const key = S.key;
   const roi = S.roi && S.roi[2] - S.roi[0] > 3 ? S.roi : [0, 0, S.info.video.width, S.info.video.height];
   await api(`/api/videotrace/${key}`, { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ref: +$("#refFrame").value, roi, step: 1 }) });
+    body: JSON.stringify({ ref: +$("#refFrame").value, refavg: +$("#refAvg").value || 1, dark: frameOpts().dark, roi, step: 1 }) });
   const poll = async () => {
     if (S.key !== key) return;
     const j = await (await api(`/api/videotrace/${key}`)).json();
@@ -1072,6 +1109,11 @@ function wire() {
   $("#rawRange").onchange = (e) => { LS.set("rawRange", e.target.value); showFrame(S.frame); };
   applyRawSwitch();
   $("#refFrame").onchange = () => { S.refN = null; if ($("#mode").value === "ratio") autoContrast(); };
+  $("#darkSub").checked = LS.get("darkSub", true);
+  $("#tAvg").value = LS.get("tAvg", "1");
+  $("#sSmooth").value = LS.get("sSmooth", "0");
+  $("#refAvg").value = LS.get("refAvg", "20");
+  for (const id of ["darkSub", "tAvg", "sSmooth", "refAvg"]) $("#" + id).onchange = onDenoiseChange;
   $("#lo").onchange = (e) => { S.lo = +e.target.value; showFrame(S.frame); };
   $("#hi").onchange = (e) => { S.hi = +e.target.value; showFrame(S.frame); };
   $("#auto").onclick = autoContrast;

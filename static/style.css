@@ -127,3 +127,5 @@ button.primary { background: #1f4b7a; border-color: #2d6aa8; }
 #hystTable .tr-cls.on, #hystTable .tr-cls.initial { color: var(--open); }
 #hystTable .tr-cls.off, #hystTable .tr-cls.end, #hystTable .tr-cls.fov { color: var(--collapse); }
 
+.denoise { display: inline-flex; gap: 8px; align-items: center; padding-left: 10px; margin-left: 2px; border-left: 1px solid var(--line); }
+.denoise select { padding: 2px 4px; }

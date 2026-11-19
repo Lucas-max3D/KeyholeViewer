@@ -186,7 +186,7 @@ def _edge_subpix(row_r, xs_in, thr, side):
 
 SURF_TOL = 14
 FOV_MARGIN = 50  # tip within this many px of the image edge -> keyhole (front) is leaving the image
-VERSION = 4  # bump when the video analysis changes (invalidates the cache)
+VERSION = 5  # bump when the video analysis changes (invalidates the cache)
 
 
 def analyze_frame(r: np.ndarray, surf: int, thr: float, y_off: int = 0, surf_x=None):
@@ -248,9 +248,18 @@ def analyze_frame(r: np.ndarray, surf: int, thr: float, y_off: int = 0, surf_x=N
 
 
 def analyze_video(video, laser=None, thr=0.07, band=220, step=1, progress=None, cancel=None,
-                  margin_ms=(1.5, 4.0)):
+                  margin_ms=(1.5, 4.0), dark=None):
     """Run the per-frame keyhole analysis. `laser` = (t_on, t_off) in ms (from acoustics, or assumed from
-    the sheet). Only frames from t_on - margin[0] to t_off + margin[1] are analysed."""
+    the sheet). Only frames from t_on - margin[0] to t_off + margin[1] are analysed. `dark` = mean dark
+    frame, subtracted from every frame before the ratios are formed."""
+    def frame(n):
+        f = video.read_frame(n).astype(np.float32)
+        return f - dark if dark is not None else f
+
+    def rows(n, a, b):
+        f = video.read_rows(n, a, b).astype(np.float32)
+        return f - dark[a:b] if dark is not None else f
+
     fps = video.meta["fps"]
     first, last = video.first, video.last
     a_first, a_last = first, last
@@ -261,13 +270,13 @@ def analyze_video(video, laser=None, thr=0.07, band=220, step=1, progress=None, 
     t_on = laser[0] if laser else 0.0
     pre_end = min(last, int(np.floor(t_on * 1e-3 * fps)) - 5)
     pre_frames = list(range(max(first, pre_end - 40), pre_end, 2)) or [first]
-    pre = np.median([_smooth(video.read_frame(n)) for n in pre_frames], 0)
+    pre = np.median([_smooth(frame(n)) for n in pre_frames], 0)
     # post reference: the last frames, if they are well after the laser switched off
     post = None
     # without a laser gate (no acoustics) assume the recording outlasts the laser
     if (laser is None and last / fps * 1e3 > 20) or (laser and last / fps * 1e3 > laser[1] + 3.0):
         post_frames = list(range(max(first, last - 30), last + 1, 2))
-        post = np.median([_smooth(video.read_frame(n)) for n in post_frames], 0)
+        post = np.median([_smooth(frame(n)) for n in post_frames], 0)
     pre = np.maximum(pre, 1)
     surf = surface_row(pre)
     surf_x = surface_profile(pre, surf)
@@ -283,7 +292,7 @@ def analyze_video(video, laser=None, thr=0.07, band=220, step=1, progress=None, 
             return None
         # smoothing needs 1 row of context on each side; read only the band
         r0, r1 = max(0, y0 - 1), min(h, y1 + 1)
-        f = _smooth(video.read_rows(n, r0, r1))[y0 - r0:y0 - r0 + (y1 - y0)]
+        f = _smooth(rows(n, r0, r1))[y0 - r0:y0 - r0 + (y1 - y0)]
         r = f / pre_b
         if post_b is not None:
             r = np.minimum(r, f / post_b)
@@ -317,7 +326,7 @@ def analyze_video(video, laser=None, thr=0.07, band=220, step=1, progress=None, 
         "angle": [None if np.isnan(v) else round(float(v), 2) for v in angle],
         "rear_angle": [None if np.isnan(v) else round(float(v), 2) for v in rear_angle],
         "per_frame": res, "surface_row": surf, "surface_profile": surf_x[::8].tolist(), "scan_dir": scan_dir, "front": front,
-        "post_ref": post is not None, "thr": thr, "fps": fps, "width": int(pre.shape[1]), "step": step, "pre_frames": [pre_frames[0], pre_frames[-1]],
+        "post_ref": post is not None, "dark_subtracted": dark is not None, "thr": thr, "fps": fps, "width": int(pre.shape[1]), "step": step, "pre_frames": [pre_frames[0], pre_frames[-1]],
     }
 
 

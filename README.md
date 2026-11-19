@@ -14,6 +14,10 @@ parameter sheet `LinkWallNumberParameters.xlsx`). Double-click `start_viewer.bat
 The parent folder is scanned recursively; press **Rescan** after more data is copied.
 - Videos: any folder with `.cihx` files named `W<wall>[S<side>]L<line>…` (flat/dark-field folders are skipped).
 - Acoustics: any `W…L….tpc5` file.
+- Dark-field recordings: video folders with `dark` in the name. Each video uses the one in its own folder,
+  otherwise the one recorded closest in time (all recordings share camera, resolution, shutter and frame rate).
+  The mean dark frame is cached in `annotations/cache/`. Folders with `flat` are recognised but not used:
+  the in-situ reference (frames before the laser, with the sample in place) already removes the beam profile.
 - Material from the path: contains `Titan` → Ti64, `Steel`/`316` → 316L.
 - Video and acoustic are paired by material + sample ID.
 - Process parameters (power profile, velocity) come from the parameter sheet (one sheet per material).
@@ -35,6 +39,14 @@ The parent folder is scanned recursively; press **Rescan** after more data is co
   Δ previous frame, or no correction) with the min/max contrast fields; *Raw* = untreated pixel values with a
   linear brightness/contrast stretch per frame — "sample" (stretches the sample population) or
   "full range" (0.3–99.7 % of all pixels). Flip and keyhole overlay apply in both.
+- **Reference ×n**: the ÷ reference view divides by the mean of n frames from the ref frame on (default 20);
+  a single reference frame adds its own photon noise to every frame.
+- **Noise reduction** (applies to Processed and Raw, computed on the server):
+  - *dark*: subtract the mean dark frame before any correction (on by default).
+  - *avg*: mean of n consecutive frames centred on the current one; lowers the noise by √n but blurs motion
+    over n × 25 µs (at 40 kfps).
+  - *smooth*: Gaussian smoothing, σ in pixels.
+  With ref ×20 + 1 px smoothing the pixel noise of the ÷ reference image drops from ~2.6 % to ~0.8 %.
 - Display: flip ↕ (default on: sample at the bottom, keyhole pointing down) / flip ↔.
 - The bottom-right corner of the video shows frame number, time, commanded power and position along the line.
 - Shift+drag on the image = ROI, then **Video trace** = per-frame mean |frame/ref − 1| in the ROI, overlaid on the plot
@@ -52,7 +64,7 @@ copies them into the marked events with the note "auto".
   onset of that decay (least-squares fit of a level followed by an exponential decay), but not earlier than the
   last time the RMS was still at `OPEN_FRACTION` of its open level. The plain threshold crossing is kept in the
   event as `t_threshold_ms`. A collapse at or after laser off is reported at the laser-off time.
-- **Video**: every frame is divided by a pre-laser and a post-laser reference (median of frames);
+- **Video**: the dark frame is subtracted, then every frame is divided by a pre-laser and a post-laser reference (median of frames);
   pixels brighter than both by *pixel thr* are vapour. The keyhole is the bright component that starts at the
   sample surface and reaches deepest. The surface is found per column in the pre-laser reference (yellow dashed
   line), so sloped or uneven tops are handled.

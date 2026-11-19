@@ -15,6 +15,7 @@ import re
 import threading
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
+from datetime import datetime
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -174,6 +175,57 @@ class Video:
                     buf = fh.read((y1 - y0) * w * 2)
                 return np.frombuffer(buf, dtype="<u2").reshape(y1 - y0, w)
         raise IndexError(f"frame {n} not available")
+
+
+def _rec_time(meta):
+    try:
+        return datetime.strptime(f"{meta['date']} {meta['time']}"[:19], "%Y/%m/%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+
+
+def find_dark(video_folder: str, calib: list) -> dict | None:
+    """Dark-field recording for a video: one in the same folder if present, otherwise the one recorded
+    closest in time (all videos of the beamtime share camera, resolution, shutter and frame rate)."""
+    darks = [c for c in calib if re.search("dark", c["name"], re.I)]
+    if not darks:
+        return None
+    parent = os.path.dirname(video_folder)
+    same = [c for c in darks if os.path.dirname(c["folder"]) == parent]
+    if same:
+        return same[0]
+    t = _rec_time(read_cihx(os.path.join(video_folder, sorted(
+        f for f in os.listdir(video_folder) if f.lower().endswith(".cihx"))[0])))
+    def dt(c):
+        tc = _rec_time(read_cihx(os.path.join(c["folder"], sorted(
+            f for f in os.listdir(c["folder"]) if f.lower().endswith(".cihx"))[0])))
+        return abs((tc - t).total_seconds()) if (t and tc) else float("inf")
+    return min(darks, key=dt)
+
+
+_dark_mem: dict = {}
+
+
+def dark_frame(dark_folder: str, cache_dir: str, n_frames: int = 400) -> np.ndarray:
+    """Mean dark frame (float32), cached as .npy in cache_dir."""
+    if dark_folder in _dark_mem:
+        return _dark_mem[dark_folder]
+    os.makedirs(cache_dir, exist_ok=True)
+    fn = os.path.join(cache_dir, f"dark_{os.path.basename(dark_folder)}.npy")
+    if os.path.exists(fn):
+        d = np.load(fn)
+    else:
+        v = load_video(dark_folder)
+        ns = np.linspace(v.first, v.last, n_frames).astype(int)
+        acc = np.zeros((v.meta["height"], v.meta["width"]), np.float64)
+        for n in ns:
+            acc += v.read_frame(int(n))
+        d = (acc / len(ns)).astype(np.float32)
+        tmp = fn[:-4] + f".{os.getpid()}.tmp.npy"
+        np.save(tmp, d)
+        os.replace(tmp, fn)
+    _dark_mem[dark_folder] = d
+    return d
 
 
 def load_video(folder: str) -> Video | None:
@@ -503,4 +555,10 @@ def scan(root: str = ROOT) -> dict:
             if rec is not None:
                 rec = dict(rec, _assumed_side=1)
         s["params"] = rec or {}
+        if s.get("video_folder"):
+            try:
+                dk = find_dark(s["video_folder"], calib)
+            except Exception:
+                dk = None
+            s["dark_folder"] = dk["folder"] if dk else None
     return {"samples": samples, "calib": calib}
